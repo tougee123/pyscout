@@ -1,108 +1,126 @@
 # pyscout
 
-**Hybrid security auditor for small Python projects.**
+**Python security review with offline AST checks and optional Claude analysis.**
 
-pyscout scans your Python code for common security issues with deterministic
-AST rules — fast, offline, and free — then, optionally, uses Claude to explain
-each finding in context and flag likely false positives.
+pyscout helps maintainers find common security weaknesses in small Python
+projects, understand their impact, and produce actionable remediation reports.
+It combines a dependency-free static scanner with Claude's ability to interpret
+findings in the context of the surrounding code.
 
-The two layers are independent: the rule scan always runs with no API key, and
-the LLM layer only kicks in with `--explain`.
+Built to review my own Python tools and support security improvements in small
+open-source projects.
 
-## What it finds (rule layer)
+## How it works
 
-- Code injection: `eval` / `exec`
-- Command injection: `os.system`, `subprocess(..., shell=True)`
-- SQL injection: queries built by concatenation / f-strings / `.format`
-- Unsafe deserialization: `pickle`, `yaml.load` without a safe loader
-- Hardcoded secrets (keys, tokens, passwords)
-- Disabled TLS verification (`verify=False`)
-- Weak hashes (`md5`, `sha1`)
+1. **Detect locally.** Parse Python source with deterministic AST rules. Every
+   finding includes a source location, severity, CWE, explanation, and suggested
+   fix. No API key is required.
+2. **Review with Claude.** Add `--explain` to get contextual impact explanations,
+   concrete remediation advice, and likely-false-positive assessments.
+3. **Keep the evidence.** Export text, JSON, or Markdown reports, apply fixes, and
+   re-scan the code.
 
-Each rule ships with a plain-language **why** and **fix**, so the offline
-report is already actionable.
+The scanner parses source without executing the target program. Claude reviews
+existing rule findings; rule IDs, locations, and severities stay rule-defined.
+Findings marked as likely false positives remain visible in the report.
 
-## What `--explain` adds (LLM layer)
+## Rule coverage
 
-- Rewrites **why** / **fix** using the actual surrounding code
-- Flags findings that are **likely false positives** in context
+| Category | Patterns checked | CWE |
+| --- | --- | --- |
+| Code injection | `eval`, `exec` | CWE-95 |
+| Command injection | `os.system`, `os.popen`, `subprocess.*` with literal `shell=True` | CWE-78 |
+| SQL injection | Dynamic strings passed directly to `execute` / `executemany`: concatenation, f-strings, `%`, `.format` | CWE-89 |
+| Unsafe deserialization | `pickle.load` / `loads`, and selected `yaml.load` calls without an explicit loader | CWE-502 |
+| Hardcoded secrets | String assignments to names resembling keys, tokens, or passwords, excluding common placeholders | CWE-798 |
+| Disabled TLS verification | Calls with literal `verify=False` | CWE-295 |
+| Weak cryptography | `hashlib.md5`, `hashlib.sha1` | CWE-327 |
 
-It never invents new findings — detection stays deterministic.
+## Quick start
 
-## Why
-
-Built to audit my own small tools, and to help harden other small open-source
-projects in the community. Issues found in third-party projects are reported
-through **responsible disclosure** — privately to maintainers first, never
-dropped publicly before a fix.
-
-## Install
+Requires **Python 3.9+**. From the repository root:
 
 ```bash
-pip install -e .                 # rule layer only, zero dependencies
-pip install -e '.[explain]'      # also install the Anthropic SDK for --explain
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install -e .
+
+pyscout examples/vulnerable_sample.py
+```
+
+The bundled sample produces **five high-severity findings**: a hardcoded key,
+two shell command patterns, a dynamically constructed SQL query, and unsafe
+pickle loading. The command exits with `1` because findings exist.
+
+## Claude review
+
+Install the Anthropic SDK and set your credentials:
+
+```bash
+python -m pip install -e '.[explain]'
+export ANTHROPIC_API_KEY='your-api-key'
+
+pyscout examples/vulnerable_sample.py --explain
+```
+
+For each file with findings, `--explain` sends the full source file and finding
+list to the Anthropic API. Claude refines the impact explanation and suggested
+fix, and assesses whether each finding is likely a false positive. Source is
+processed locally when `--explain` is omitted.
+
+The CLI also accepts `ANTHROPIC_AUTH_TOKEN` through the Anthropic SDK. Credentials
+must be set in the environment; `.env` files are not loaded automatically.
+
+To select a model available to your account:
+
+```bash
+pyscout src/ --explain --model claude-sonnet-5-5
 ```
 
 ## Usage
 
 ```bash
-pyscout path/to/file.py                      # offline rule scan (text)
-pyscout path/to/project/                     # scan every .py under a directory
-pyscout src/ --explain                       # add LLM explanations (needs ANTHROPIC_API_KEY)
-pyscout src/ --explain --model claude-sonnet-5-5   # cheaper model for --explain
+pyscout path/to/file.py                      # scan one file
+pyscout path/to/project/                     # scan a directory
+pyscout src/ --explain                       # add Claude review
 pyscout src/ --format json                   # machine-readable output
-pyscout src/ --format markdown -o report.md  # write a Markdown evidence report
+pyscout src/ --format markdown -o report.md  # save a Markdown report
 ```
 
-Exit code is `1` when real findings exist and `0` when clean, so it drops into
-CI as a gate. (Findings the LLM marks as likely false positives don't fail the
-build.)
+Directory scans collect `.py` files and exclude common environment, dependency,
+build, and cache directories. Without `-o`, the report goes to stdout.
 
-## Reports & evidence
+## Audit reports
 
-`--format markdown` (or `json`) produces a traceable report suited to a
-defensive engagement's records:
+JSON and Markdown reports include:
 
-- A metadata header: target, UTC timestamp, tool version, and which model (if
-  any) reviewed the findings.
-- A **SHA-256** of each scanned file, so the report is pinned to the exact code
-  that was audited.
-- A stable **finding ID** per issue, so the same finding can be tracked across
-  re-scans.
-- A **CWE** reference per finding, mapping it to the standard weakness class.
+- Target, UTC timestamp, tool version, and the model selected when review is requested.
+- SHA-256 source hashes: every collected file in JSON, files with findings in Markdown.
+- Finding IDs, source locations, severity, rule IDs, and CWE references.
+- Impact explanations, remediation advice, and likely-false-positive labels.
 
-Use `-o PATH` to write the report to a file; stdout stays human-readable text.
+Finding IDs are repeatable for the same path, rule, line number, and source line.
 
-### Engagement record
-
-`--record record.json` embeds an engagement header in the report — operator,
-organization/workspace ID, authorized scope, security contact, data-retention
-note. Copy `record.example.json` and fill it in:
+Attach review metadata with `--record`:
 
 ```bash
-pyscout src/ --explain --format markdown --record record.json -o report.md
+cp record.example.json record.json
+# Replace the example values with your actual review details.
+pyscout src/ --format markdown --record record.json -o report.md
 ```
 
-> **Note on scope.** Anthropic's Cyber Verification Program covers *your own*
-> code, products, and infrastructure. This record header is a convenience for
-> documenting defensive audits of in-scope assets — it is **not** an official
-> CVP template, and auditing third-party projects is governed by the general
-> Usage Policy and responsible disclosure, not a CVP grant.
+The record supports operator, organization/workspace ID, engagement ID, scope,
+security contact, and retention notes.
 
-Try it against the bundled insecure sample:
+## CI integration
 
-```bash
-pyscout examples/vulnerable_sample.py
-```
+| Exit code | Meaning |
+| --- | --- |
+| `0` | No findings remain after excluding likely false positives, or no files were collected |
+| `1` | At least one finding is not marked as a likely false positive |
+| `2` | A handled setup or input error |
 
-## Notes
-
-- For broader coverage, run [`bandit`](https://bandit.readthedocs.io) and
-  [`pip-audit`](https://pypi.org/project/pip-audit/) alongside pyscout —
-  pyscout keeps a small, high-signal rule set rather than reimplementing them.
-- Files larger than ~60k characters are skipped (not silently truncated).
-- `--explain` default model is `claude-opus-5-5`; override with `--model`.
-
-## Status
-
-Early / experimental. Treat findings as a second opinion, not a guarantee.
+Run without `--explain` for a deterministic CI gate. With `--explain`, Claude's
+likely-false-positive assessments affect the exit code. If review fails with an
+API error, refusal, or unparseable response, the CLI warns and retains the
+affected file's original rule findings.
