@@ -1,0 +1,9 @@
+{
+  "operator": "Jane Doe <jane@example.com>",
+  "organization_id": "org-xxxxxxxx",
+  "engagement_id": "ENG-2026-001",
+  "scope": "Own code/product/infra only — repo acme/internal-tools (CVP-covered).",
+  "security_contact": "security@example.com",
+  "data_retention": "enabled (CVP standard)",
+  "notes": "Claude reviewed under CVP grant. Internal defensive audit."
+}
