@@ -12,6 +12,7 @@ dependencies = []
 
 [project.optional-dependencies]
 explain = ["anthropic>=1.0.0"]
+dev = ["pytest>=7.0"]
 
 [project.scripts]
 pyscout = "pyscout.cli:main"

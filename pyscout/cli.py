@@ -33,6 +33,10 @@ def main(argv: list[str] | None = None) -> int:
         help=f"Claude model for --explain (default: {DEFAULT_MODEL})",
     )
     parser.add_argument(
+        "--jobs", type=int, default=4, metavar="N",
+        help="Concurrent files during --explain (default: 4)",
+    )
+    parser.add_argument(
         "--format", choices=("text", "json", "markdown"), default="text",
         help="Report format (default: text)",
     )
@@ -61,8 +65,6 @@ def main(argv: list[str] | None = None) -> int:
         print("No Python files to audit.", file=sys.stderr)
         return 0
 
-    quiet = args.output is not None or args.format != "text"
-
     # Detection: always runs, offline, no key needed.
     results = {str(src.path): scan_text(src.text) for src in files}
     file_hashes = {str(src.path): src.sha256 for src in files}
@@ -73,16 +75,11 @@ def main(argv: list[str] | None = None) -> int:
         if err:
             print(f"error: {err}", file=sys.stderr)
             return 2
-        from pyscout.auditor import enrich
         by_path = {str(src.path): src for src in files}
-        for path, findings in results.items():
-            if not findings:
-                continue
-            if not quiet:
-                print(f"explaining {path} ...", file=sys.stderr)
-            msg = enrich(client, by_path[path].text, findings, args.model)
-            if msg:
-                print(f"warning: enrichment failed for {path}: {msg}", file=sys.stderr)
+        for path, msg in run_enrichment(
+            client, results, by_path, args.model, max(1, args.jobs)
+        ):
+            print(f"warning: enrichment failed for {path}: {msg}", file=sys.stderr)
 
     record = None
     if args.record:
@@ -116,6 +113,31 @@ def main(argv: list[str] | None = None) -> int:
         print(text)
 
     return 1 if has_findings(results) else 0
+
+
+def run_enrichment(client, results, by_path, model, jobs):
+    """Enrich findings in parallel. Yields (path, error_message) for failures."""
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    from pyscout.auditor import enrich
+
+    targets = {p: f for p, f in results.items() if f}
+    if not targets:
+        return
+
+    with ThreadPoolExecutor(max_workers=min(jobs, len(targets))) as pool:
+        futures = {
+            pool.submit(enrich, client, by_path[p].text, f, model): p
+            for p, f in targets.items()
+        }
+        for future in as_completed(futures):
+            path = futures[future]
+            try:
+                msg = future.result()
+            except Exception as e:  # noqa: BLE001 - surface any worker failure, don't crash
+                msg = str(e)
+            if msg:
+                yield path, msg
 
 
 def _make_client():

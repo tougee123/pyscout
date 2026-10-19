@@ -11,6 +11,13 @@ import json
 
 from pyscout.models import Finding
 
+# Import the SDK's error class if available, so enrich() can be imported and
+# tested without the optional `anthropic` package installed.
+try:
+    from anthropic import APIError as _APIError
+except ImportError:  # pragma: no cover - exercised only without the extra
+    _APIError = Exception
+
 ENRICH_SYSTEM = """\
 You are a security reviewer refining findings from a static Python scanner.
 You are given a source file and a list of findings (each with an index and a
@@ -46,8 +53,6 @@ def enrich(client, source_text: str, findings: list[Finding], model: str) -> str
     if not findings:
         return None
 
-    import anthropic
-
     listing = "\n".join(
         f"[{i}] line {f.line}: {f.title} ({f.category}) -- {f.code}"
         for i, f in enumerate(findings)
@@ -65,7 +70,7 @@ def enrich(client, source_text: str, findings: list[Finding], model: str) -> str
             system=[{"type": "text", "text": ENRICH_SYSTEM, "cache_control": {"type": "ephemeral"}}],
             messages=[{"role": "user", "content": user}],
         )
-    except anthropic.APIError as e:
+    except _APIError as e:
         return str(e)
 
     if response.stop_reason == "refusal":

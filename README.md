@@ -83,6 +83,7 @@ pyscout src/ --explain --model claude-sonnet-5-5
 pyscout path/to/file.py                      # scan one file
 pyscout path/to/project/                     # scan a directory
 pyscout src/ --explain                       # add Claude review
+pyscout src/ --explain --jobs 8              # review up to 8 files concurrently
 pyscout src/ --format json                   # machine-readable output
 pyscout src/ --format markdown -o report.md  # save a Markdown report
 ```
